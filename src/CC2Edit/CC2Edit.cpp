@@ -74,7 +74,7 @@ enum TileListId {
 
 CC2EditMain::CC2EditMain(QWidget* parent)
     : QMainWindow(parent), m_currentTileset(), m_savedDrawMode(ActionDrawPencil),
-      m_currentDrawMode(CC2EditorWidget::DrawPencil), m_subProc()
+    m_currentDrawMode(CC2EditorWidget::DrawPencil), m_subProc(), m_manipulateClipboard(false)
 {
     setWindowTitle(QStringLiteral("CC2Edit " CCTOOLS_VERSION));
 
@@ -178,10 +178,41 @@ CC2EditMain::CC2EditMain(QWidget* parent)
     m_actions[ActionInspectTiles]->setStatusTip(tr("Inspect tiles and make advanced modifications"));
     m_actions[ActionInspectTiles]->setShortcut(Qt::CTRL | Qt::Key_I);
     m_actions[ActionInspectTiles]->setCheckable(true);
-    m_actions[ActionToggleGreens] = new QAction(ICON("cctools-gbutton"), tr("&Toggle "), this);
+
+    m_actions[ActionClipboardManip] = new QAction(ICON("edit-manipulate-clipboard"), tr("&Manipulate Clipboard"), this);
+    m_actions[ActionClipboardManip]->setStatusTip(tr("Manipulation operations will modify the current clipboard instead of the selected area"));
+    m_actions[ActionClipboardManip]->setShortcut(Qt::CTRL | Qt::ALT | Qt::Key_V);
+    m_actions[ActionClipboardManip]->setCheckable(true);
+    m_actions[ActionRotateLeft] = new QAction(ICON("object-rotate-left"), tr("Rotate &Left"), this);
+    m_actions[ActionRotateLeft]->setStatusTip(tr("Rotate the selection left"));
+    m_actions[ActionRotateLeft]->setShortcut(Qt::CTRL | Qt::Key_Comma);
+    m_actions[ActionRotateLeft]->setEnabled(false);
+    m_actions[ActionRotateRight] = new QAction(ICON("object-rotate-right"), tr("Rotate &Right"), this);
+    m_actions[ActionRotateRight]->setStatusTip(tr("Rotate the selection right"));
+    m_actions[ActionRotateRight]->setShortcut(Qt::CTRL | Qt::Key_Period);
+    m_actions[ActionRotateRight]->setEnabled(false);
+    m_actions[ActionFlipHoriz] = new QAction(ICON("object-flip-horizontal"), tr("Flip horizontally"), this);
+    m_actions[ActionFlipHoriz]->setStatusTip(tr("Flip the selection around the vertical axis"));
+    m_actions[ActionFlipHoriz]->setShortcut(Qt::CTRL | Qt::Key_Semicolon);
+    m_actions[ActionFlipHoriz]->setEnabled(false);
+    m_actions[ActionFlipVert] = new QAction(ICON("object-flip-vertical"), tr("Flip vertically"), this);
+    m_actions[ActionFlipVert]->setStatusTip(tr("Flip the selection around the horizonal axis"));
+    m_actions[ActionFlipVert]->setShortcut(Qt::CTRL | Qt::Key_QuoteLeft);
+    m_actions[ActionFlipVert]->setEnabled(false);
+
+    m_actions[ActionToggleGreens] = new QAction(ICON("cctools-gbutton"), tr("&Toggle toggle tiles"), this);
     m_actions[ActionToggleGreens]->setStatusTip(tr("Toggle all toggle doors and chips in the current level"));
     m_actions[ActionToggleGreens]->setShortcut(Qt::CTRL | Qt::Key_G);
     m_actions[ActionToggleGreens]->setEnabled(false);
+
+    m_actions[ActionViewClipboard] = new QAction(ICON("image-stack-open"), tr("Overlay &Clipboard"), this);
+    m_actions[ActionViewClipboard]->setStatusTip(tr("Overlay contents of the clipboard over the level"));
+    m_actions[ActionViewClipboard]->setShortcut(Qt::CTRL | Qt::ALT | Qt::Key_C);
+    m_actions[ActionViewClipboard]->setCheckable(true);
+    m_actions[ActionColorWireNetworks] = new QAction(ICON("color-wire-networks"), tr("Color &Wire Networks"), this);
+    m_actions[ActionColorWireNetworks]->setStatusTip(tr("Color wire all networks with distinct colors"));
+    m_actions[ActionColorWireNetworks]->setShortcut(Qt::CTRL | Qt::SHIFT | Qt::Key_P);
+    m_actions[ActionColorWireNetworks]->setCheckable(true);
     m_drawModeGroup = new QActionGroup(this);
     m_drawModeGroup->addAction(m_actions[ActionDrawPencil]);
     m_drawModeGroup->addAction(m_actions[ActionDrawLine]);
@@ -205,6 +236,9 @@ CC2EditMain::CC2EditMain(QWidget* parent)
     m_actions[ActionViewMonsterPaths] = new QAction(tr("Show Mo&nster Paths"), this);
     m_actions[ActionViewMonsterPaths]->setStatusTip(tr("Trace Projected Monster Paths (May be inaccurate)"));
     m_actions[ActionViewMonsterPaths]->setCheckable(true);
+    m_actions[ActionViewHoveredWireNetwork] = new QAction(tr("Show &Hovered Wire Network"), this);
+    m_actions[ActionViewHoveredWireNetwork]->setStatusTip(tr("Highlight the wires connected to the hovered tile"));
+    m_actions[ActionViewHoveredWireNetwork]->setCheckable(true);
 
     m_actions[ActionZoom200] = new QAction(tr("200%"), this);
     m_actions[ActionZoom200]->setStatusTip(tr("Zoom to 200%"));
@@ -671,16 +705,16 @@ CC2EditMain::CC2EditMain(QWidget* parent)
 
     connect(rolAction, &QAction::triggered, this, [this, allTiles] {
         allTiles->rotateLeft();
-        m_leftTile.rotateLeft();
+        m_leftTile.rotateLeft(true);
         setLeftTile(m_leftTile);
-        m_rightTile.rotateLeft();
+        m_rightTile.rotateLeft(true);
         setRightTile(m_rightTile);
     });
     connect(rorAction, &QAction::triggered, this, [this, allTiles] {
         allTiles->rotateRight();
-        m_leftTile.rotateRight();
+        m_leftTile.rotateRight(true);
         setLeftTile(m_leftTile);
-        m_rightTile.rotateRight();
+        m_rightTile.rotateRight(true);
         setRightTile(m_rightTile);
     });
     connect(glyphAction, &QAction::toggled, this, [allTiles](bool checked) {
@@ -773,11 +807,15 @@ CC2EditMain::CC2EditMain(QWidget* parent)
     toolsMenu->addAction(m_actions[ActionInspectHints]);
     toolsMenu->addAction(m_actions[ActionInspectTiles]);
     toolsMenu->addSeparator();
+    toolsMenu->addAction(m_actions[ActionViewClipboard]);
+    toolsMenu->addAction(m_actions[ActionColorWireNetworks]);
+    toolsMenu->addSeparator();
     toolsMenu->addAction(m_actions[ActionToggleGreens]);
 
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(m_actions[ActionViewViewport]);
     viewMenu->addAction(m_actions[ActionViewMonsterPaths]);
+    viewMenu->addAction(m_actions[ActionViewHoveredWireNetwork]);
     viewMenu->addSeparator();
     QMenu* dockMenu = viewMenu->addMenu(tr("&Toolbox"));
     dockMenu->addAction(m_gamePropsDock->toggleViewAction());
@@ -824,6 +862,7 @@ CC2EditMain::CC2EditMain(QWidget* parent)
     tbarMain->addAction(m_actions[ActionCut]);
     tbarMain->addAction(m_actions[ActionCopy]);
     tbarMain->addAction(m_actions[ActionPaste]);
+
     QToolBar* tbarTools = addToolBar(QString());
     tbarTools->setObjectName(QStringLiteral("ToolbarTools"));
     tbarTools->setWindowTitle(tr("Tools"));
@@ -838,7 +877,19 @@ CC2EditMain::CC2EditMain(QWidget* parent)
     tbarTools->addAction(m_actions[ActionInspectHints]);
     tbarTools->addAction(m_actions[ActionInspectTiles]);
     tbarTools->addSeparator();
-    tbarTools->addAction(m_actions[ActionToggleGreens]);
+    tbarTools->addAction(m_actions[ActionViewClipboard]);
+    tbarTools->addAction(m_actions[ActionColorWireNetworks]);
+    QToolBar* tbarManip = addToolBar(QString());
+    tbarManip->setObjectName(QStringLiteral("ToolbarManipulate"));
+    tbarManip->setWindowTitle(tr("Manipulate"));
+    tbarManip->addAction(m_actions[ActionClipboardManip]);
+    tbarManip->addSeparator();
+    tbarManip->addAction(m_actions[ActionRotateLeft]);
+    tbarManip->addAction(m_actions[ActionRotateRight]);
+    tbarManip->addAction(m_actions[ActionFlipHoriz]);
+    tbarManip->addAction(m_actions[ActionFlipVert]);
+    tbarManip->addSeparator();
+    tbarManip->addAction(m_actions[ActionToggleGreens]);
 
     // Status bar
     m_positionLabel = new QLabel(this);
@@ -876,10 +927,19 @@ CC2EditMain::CC2EditMain(QWidget* parent)
     connect(m_actions[ActionDrawWire], &QAction::toggled, this, &CC2EditMain::onDrawWireAction);
     connect(m_actions[ActionInspectHints], &QAction::toggled, this, &CC2EditMain::onInspectHints);
     connect(m_actions[ActionInspectTiles], &QAction::toggled, this, &CC2EditMain::onInspectTiles);
+
+    connect(m_actions[ActionClipboardManip], &QAction::triggered, this, &CC2EditMain::onClipboardManipToggle);
+    connect(m_actions[ActionRotateLeft], &QAction::triggered, this, &CC2EditMain::onRotateLeftAction);
+    connect(m_actions[ActionRotateRight], &QAction::triggered, this, &CC2EditMain::onRotateRightAction);
+    connect(m_actions[ActionFlipHoriz], &QAction::triggered, this, &CC2EditMain::onFlipHorizAction);
+    connect(m_actions[ActionFlipVert], &QAction::triggered, this, &CC2EditMain::onFlipVertAction);
     connect(m_actions[ActionToggleGreens], &QAction::triggered, this, &CC2EditMain::onToggleGreensAction);
 
     connect(m_actions[ActionViewViewport], &QAction::toggled, this, &CC2EditMain::onViewViewportToggled);
     connect(m_actions[ActionViewMonsterPaths], &QAction::toggled, this, &CC2EditMain::onViewMonsterPathsToggled);
+    connect(m_actions[ActionViewClipboard], &QAction::triggered, this, &CC2EditMain::onViewClipboardToggled);
+    connect(m_actions[ActionViewHoveredWireNetwork], &QAction::toggled, this, &CC2EditMain::onViewHoveredWireNetworkToggled);
+    connect(m_actions[ActionColorWireNetworks], &QAction::toggled, this, &CC2EditMain::onColorWireNetworksToggled);
 
     connect(m_tilesetGroup, &QActionGroup::triggered, this, &CC2EditMain::onTilesetMenu);
     connect(m_actions[ActionZoom200], &QAction::triggered, this, [this] { setZoomFactor(2.0); });
@@ -936,6 +996,9 @@ CC2EditMain::CC2EditMain(QWidget* parent)
             settings.value(QStringLiteral("ViewViewport"), true).toBool());
     m_actions[ActionViewMonsterPaths]->setChecked(
             settings.value(QStringLiteral("ViewMonsterPaths"), false).toBool());
+    m_actions[ActionViewClipboard]->setChecked(settings.value(QStringLiteral("ViewClipboard"), false).toBool());
+    m_actions[ActionViewHoveredWireNetwork]->setChecked(settings.value(QStringLiteral("HighlightHoveredWireNetwork"), true).toBool());
+    m_actions[ActionColorWireNetworks]->setChecked(settings.value(QStringLiteral("ColorWireNetworks"), false).toBool());
 
     // Make sure the toolbox docks are visible
     QDockWidget* docks[] = {m_gamePropsDock, m_mapPropsDock, sortedTilesDock, allTilesDock};
@@ -1476,6 +1539,12 @@ CC2EditorWidget* CC2EditMain::addEditor(cc2::Map* map, const QString& filename, 
         editor->setPaintFlag(CC2EditorWidget::ShowViewBox);
     if (m_actions[ActionViewMonsterPaths]->isChecked())
         editor->setPaintFlag(CC2EditorWidget::ShowMovePaths);
+    if (m_actions[ActionViewClipboard]->isChecked())
+        editor->setPaintFlag(CC2EditorWidget::ShowClipboard);
+    if (m_actions[ActionViewHoveredWireNetwork]->isChecked())
+        editor->setPaintFlag(CC2EditorWidget::ShowHoveredWires);
+    if (m_actions[ActionColorWireNetworks]->isChecked())
+        editor->setPaintFlag(CC2EditorWidget::ColorWireNetworks);
     //if (m_actions[ActionViewErrors]->isChecked())
     //    editor->setPaintFlag(CC2EditorWidget::ShowErrors);
     editor->setTileset(m_currentTileset);
@@ -1639,6 +1708,12 @@ void CC2EditMain::closeEvent(QCloseEvent* event)
                       m_actions[ActionViewViewport]->isChecked());
     settings.setValue(QStringLiteral("ViewMonsterPaths"),
                       m_actions[ActionViewMonsterPaths]->isChecked());
+    settings.setValue(QStringLiteral("ViewClipboard"),
+                      m_actions[ActionViewClipboard]->isChecked());
+    settings.setValue(QStringLiteral("HighlightHoveredWireNetwork"),
+                      m_actions[ActionViewHoveredWireNetwork]->isChecked());
+    settings.setValue(QStringLiteral("ColorWireNetworks"),
+                      m_actions[ActionColorWireNetworks]->isChecked());
 }
 
 void CC2EditMain::resizeEvent(QResizeEvent* event)
@@ -1970,48 +2045,139 @@ void CC2EditMain::onCutAction()
     }
 }
 
+std::optional<cc2::MapSection> CC2EditMain::getMapSection(const QRect fromRect) {
+    auto mapEditor = currentEditor();
+    if (!mapEditor || fromRect == QRect(-1, -1, -1, -1)) return {};
+
+    cc2::MapSection cbMap;
+    const cc2::Map* editorMap = mapEditor->map();
+    cbMap.mapData().resize(fromRect.width(), fromRect.height());
+    cbMap.mapData().copyFrom(editorMap->mapData(),
+                 fromRect.x(), fromRect.y(), 0, 0,
+                 fromRect.width(), fromRect.height());
+
+    for (int y = fromRect.top(); y <= fromRect.bottom(); ++y) {
+        for (int x = fromRect.left(); x <= fromRect.right(); ++x) {
+        if (editorMap->mapData().tile(x, y).bottom().type() == cc2::Tile::Clue)
+            cbMap.clueData().emplace_back(editorMap->clueForTile(x, y));
+        }
+    }
+    return cbMap;
+}
+
+void CC2EditMain::writeMapSectionToClipboard(const cc2::MapSection& map) {
+    auto mapEditor = currentEditor();
+    try {
+        ccl::BufferStream cbStream;
+        map.write(&cbStream);
+        QByteArray buffer((const char*)cbStream.buffer(), cbStream.size());
+
+        auto copyData = new QMimeData;
+        copyData->setData(s_cc2eFormat, buffer);
+        //TODO: set CC1 map data
+        copyData->setImageData(currentEditor()->renderMap(map.mapData()));
+        QApplication::clipboard()->setMimeData(copyData);
+        if (mapEditor) {
+            mapEditor->setClipboard(std::move(map));
+            mapEditor->dirtyBuffer();
+        }
+    } catch (const ccl::RuntimeError& err) {
+        QMessageBox::critical(this, tr("Error"),
+            tr("Error saving clipboard data: %1").arg(err.message()),
+            QMessageBox::Ok);
+    }
+}
+
 void CC2EditMain::onCopyAction()
 {
     auto mapEditor = currentEditor();
     auto scriptEditor = currentScriptEditor();
 
     if (mapEditor) {
-        if (mapEditor->selection() == QRect(-1, -1, -1, -1))
-            return;
-
-        cc2::ClipboardMap cbMap;
+        mapEditor->clearClipboard();
         const QRect selection = mapEditor->selection();
-        const cc2::Map* editorMap = mapEditor->map();
-        cbMap.mapData().resize(selection.width(), selection.height());
-        cbMap.mapData().copyFrom(editorMap->mapData(),
-                                 selection.x(), selection.y(), 0, 0,
-                                 selection.width(), selection.height());
-
-        for (int y = selection.top(); y <= selection.bottom(); ++y) {
-            for (int x = selection.left(); x <= selection.right(); ++x) {
-                if (editorMap->mapData().tile(x, y).bottom().type() == cc2::Tile::Clue)
-                    cbMap.clueData().emplace_back(editorMap->clueForTile(x, y));
-            }
-        }
-
-        try {
-            ccl::BufferStream cbStream;
-            cbMap.write(&cbStream);
-            QByteArray buffer((const char*)cbStream.buffer(), cbStream.size());
-
-            auto copyData = new QMimeData;
-            copyData->setData(s_cc2eFormat, buffer);
-            //TODO: set CC1 map data
-            copyData->setImageData(mapEditor->renderSelection());
-            QApplication::clipboard()->setMimeData(copyData);
-        } catch (const ccl::RuntimeError& err) {
-            QMessageBox::critical(this, tr("Error"),
-                    tr("Error saving clipboard data: %1").arg(err.message()),
-                    QMessageBox::Ok);
-        }
+        auto cbMapOpt = getMapSection(selection);
+        if (!cbMapOpt.has_value()) return;
+        cc2::MapSection& cbMap = cbMapOpt.value();
+        writeMapSectionToClipboard(cbMap);
     } else if (scriptEditor) {
         scriptEditor->copy();
     }
+}
+
+void CC2EditMain::pasteMapSection(cc2::MapSection map, QRect atRect) {
+    auto mapEditor = currentEditor();
+    if(!mapEditor) return;
+    cc2::Map* editorMap = mapEditor->map();
+
+    mapEditor->beginEdit(CC2EditHistory::EditMap);
+    mapEditor->selectRegion(atRect.left(), atRect.top(), atRect.width(), atRect.height());
+
+    for (int y = atRect.top(); y <= atRect.bottom(); ++y) {
+        for (int x = atRect.left(); x <= atRect.right(); ++x) {
+            if (editorMap->mapData().tile(x, y).bottom().type() == cc2::Tile::Clue)
+                editorMap->deleteClue(x, y);
+        }
+    }
+
+    editorMap->mapData().copyFrom(map.mapData(), 0, 0, atRect.left(), atRect.top(), atRect.width(), atRect.height());
+
+    auto clue_iter = map.clueData().cbegin();
+    for (int y = 0; y < map.mapData().height(); ++y) {
+        for (int x = 0; x < map.mapData().width(); ++x) {
+            if (map.mapData().tile(x, y).bottom().type() == cc2::Tile::Clue) {
+                const int dx = x + atRect.left(), dy = y + atRect.top();
+                std::string clue = *clue_iter++;
+                if (dx < editorMap->mapData().width() && dy < editorMap->mapData().height()) {
+                    editorMap->insertClue(dx, dy);
+                    editorMap->setClueForTile(dx, dy, clue);
+                }
+            }
+        }
+    }
+
+    mapEditor->endEdit();
+    m_mapProperties->updateMapProperties(editorMap);
+}
+
+std::optional<cc2::MapSection> CC2EditMain::getClipboardMapSection() {
+    const QMimeData* cbData = QApplication::clipboard()->mimeData();
+    cc2::MapSection cbMap;
+    if (cbData->hasFormat(s_cc2eFormat)) {
+        QByteArray buffer = cbData->data(s_cc2eFormat);
+        ccl::BufferStream cbStream;
+        cbStream.setFrom(buffer.constData(), buffer.size());
+
+        try {
+            cbMap.read(&cbStream);
+        } catch (const ccl::RuntimeError& err) {
+            QMessageBox::critical(this, tr("Error"),
+                tr("Error parsing clipboard data: %1").arg(err.message()),
+                QMessageBox::Ok);
+            return {};
+        }
+    } else if (cbData->hasFormat(s_chipeditFormat)) {
+        QByteArray buffer = cbData->data(s_chipeditFormat);
+        ccl::BufferStream cbStream;
+        cbStream.setFrom(buffer.constData(), buffer.size());
+
+        ccl::ClipboardData cc1Map;
+        try {
+            cc1Map.read(&cbStream);
+        } catch (const ccl::RuntimeError& err) {
+            QMessageBox::critical(this, tr("Error"),
+                tr("Error parsing clipboard data: %1").arg(err.message()),
+                QMessageBox::Ok);
+            return {};
+        }
+
+        cbMap.mapData().importFrom(cc1Map.levelData(), false);
+        cbMap.mapData().resize(cc1Map.width(), cc1Map.height());
+    } else {
+        // No recognized clipboard formats
+        return {};
+    }
+    return cbMap;
 }
 
 void CC2EditMain::onPasteAction()
@@ -2020,42 +2186,6 @@ void CC2EditMain::onPasteAction()
     auto scriptEditor = currentScriptEditor();
 
     if (mapEditor) {
-        const QMimeData* cbData = QApplication::clipboard()->mimeData();
-        cc2::ClipboardMap cbMap;
-        if (cbData->hasFormat(s_cc2eFormat)) {
-            QByteArray buffer = cbData->data(s_cc2eFormat);
-            ccl::BufferStream cbStream;
-            cbStream.setFrom(buffer.constData(), buffer.size());
-
-            try {
-                cbMap.read(&cbStream);
-            } catch (const ccl::RuntimeError& err) {
-                QMessageBox::critical(this, tr("Error"),
-                        tr("Error parsing clipboard data: %1").arg(err.message()),
-                        QMessageBox::Ok);
-                return;
-            }
-        } else if (cbData->hasFormat(s_chipeditFormat)) {
-            QByteArray buffer = cbData->data(s_chipeditFormat);
-            ccl::BufferStream cbStream;
-            cbStream.setFrom(buffer.constData(), buffer.size());
-
-            ccl::ClipboardData cc1Map;
-            try {
-                cc1Map.read(&cbStream);
-            } catch (const ccl::RuntimeError& err) {
-                QMessageBox::critical(this, tr("Error"),
-                        tr("Error parsing clipboard data: %1").arg(err.message()),
-                        QMessageBox::Ok);
-                return;
-            }
-
-            cbMap.mapData().importFrom(cc1Map.levelData(), false);
-            cbMap.mapData().resize(cc1Map.width(), cc1Map.height());
-        } else {
-            // No recognized clipboard formats
-            return;
-        }
 
         int destX, destY;
         if (mapEditor->selection() == QRect(-1, -1, -1, -1)) {
@@ -2067,41 +2197,27 @@ void CC2EditMain::onPasteAction()
         }
 
         cc2::Map* editorMap = mapEditor->map();
+        std::optional<cc2::MapSection> cbMapMaybe = getClipboardMapSection();
+        if (!cbMapMaybe.has_value()) return;
+        cc2::MapSection& cbMap = cbMapMaybe.value();
         int width = std::min((int)cbMap.mapData().width(),
                              editorMap->mapData().width() - destX);
         int height = std::min((int)cbMap.mapData().height(),
                               editorMap->mapData().height() - destY);
+        pasteMapSection(cbMap, QRect(destX, destY, width, height));
 
-        mapEditor->beginEdit(CC2EditHistory::EditMap);
-        mapEditor->selectRegion(destX, destY, width, height);
-
-        for (int y = destY; y < destY + height; ++y) {
-            for (int x = destX; x < destX + width; ++x) {
-                if (editorMap->mapData().tile(x, y).bottom().type() == cc2::Tile::Clue)
-                    editorMap->deleteClue(x, y);
-            }
-        }
-
-        editorMap->mapData().copyFrom(cbMap.mapData(), 0, 0, destX, destY, width, height);
-
-        auto clue_iter = cbMap.clueData().cbegin();
-        for (int y = 0; y < cbMap.mapData().height(); ++y) {
-            for (int x = 0; x < cbMap.mapData().width(); ++x) {
-                if (cbMap.mapData().tile(x, y).bottom().type() == cc2::Tile::Clue) {
-                    const int dx = x + destX, dy = y + destY;
-                    std::string clue = *clue_iter++;
-                    if (dx < editorMap->mapData().width() && dy < editorMap->mapData().height()) {
-                        editorMap->insertClue(dx, dy);
-                        editorMap->setClueForTile(dx, dy, clue);
-                    }
-                }
-            }
-        }
-
-        mapEditor->endEdit();
-        m_mapProperties->updateMapProperties(editorMap);
     } else if (scriptEditor) {
         scriptEditor->paste();
+    }
+}
+
+void CC2EditMain::clearTiles(QRect rect) {
+    auto mapEditor = currentEditor();
+    if (!mapEditor) return;
+
+    for (int y = rect.top(); y <= rect.bottom(); ++y) {
+        for (int x = rect.left(); x <= rect.right(); ++x)
+            mapEditor->putTile(cc2::Tile(), x, y, CC2EditorWidget::Replace);
     }
 }
 
@@ -2111,11 +2227,9 @@ void CC2EditMain::onClearAction()
     auto scriptEditor = currentScriptEditor();
 
     if (mapEditor) {
+        if (mapEditor->selection() == QRect(-1, -1, -1, -1)) return;
         mapEditor->beginEdit(CC2EditHistory::EditMap);
-        for (int y = mapEditor->selection().top(); y <= mapEditor->selection().bottom(); ++y) {
-            for (int x = mapEditor->selection().left(); x <= mapEditor->selection().right(); ++x)
-                mapEditor->putTile(cc2::Tile(), x, y, CC2EditorWidget::Replace);
-        }
+        clearTiles(mapEditor->selection());
         mapEditor->endEdit();
     } else if (scriptEditor) {
         scriptEditor->deleteSelection();
@@ -2277,41 +2391,102 @@ void CC2EditMain::onInspectTiles(bool mode)
     }
 }
 
-void CC2EditMain::onToggleGreensAction()
-{
-    CC2EditorWidget* editor = currentEditor();
-    if (!editor)
-        return;
+void CC2EditMain::doMapManipulation(std::function<void(cc2::MapSection&)> manipulator) {
+    auto mapEditor = currentEditor();
+    if (!mapEditor) return;
 
-    editor->beginEdit(CC2EditHistory::EditMap);
-    cc2::ToggleGreens(editor->map());
-    editor->endEdit();
+    std::optional<cc2::MapSection> sectionMaybe;
+    if (m_manipulateClipboard) {
+        sectionMaybe = getClipboardMapSection();
+    } else {
+        sectionMaybe = getMapSection(mapEditor->selection());
+    }
+    if (!sectionMaybe.has_value()) return;
+    cc2::MapSection& section = sectionMaybe.value();
+    manipulator(section);
+    if (m_manipulateClipboard) {
+        writeMapSectionToClipboard(std::move(section));
+    } else {
+        mapEditor->beginEdit(CC2EditHistory::EditMap);
+        QRect selection = mapEditor->selection();
+        // Clear out the old tiles
+        clearTiles(selection);
+        QSize mapSize = mapEditor->mapSize();
+        int pasteWidth = std::min((int)section.mapData().width(), mapSize.width() - selection.x());
+        int pasteHeight = std::min((int)section.mapData().height(), mapSize.height() - selection.y());
+
+        QRect pasteRect(selection.x(), selection.y(), pasteWidth, pasteHeight);
+        mapEditor->selectRegion(pasteRect.x(), pasteRect.y(), pasteWidth, pasteHeight);
+        pasteMapSection(std::move(section), pasteRect);
+        mapEditor->endEdit();
+    }
+
+}
+
+void CC2EditMain::onClipboardManipToggle(bool selected) {
+    m_manipulateClipboard = selected;
+}
+void CC2EditMain::onToggleGreensAction() {
+    doMapManipulation([&](cc2::MapSection& mapSect) {
+        cc2::ToggleGreens(mapSect.mapData());
+    });
+}
+void CC2EditMain::onRotateLeftAction() {
+    doMapManipulation([&](cc2::MapSection& mapSect) {
+        mapSect.rotateLeft(true);
+    });
+}
+void CC2EditMain::onRotateRightAction() {
+    doMapManipulation([&](cc2::MapSection& mapSect) {
+        mapSect.rotateRight(true);
+    });
+}
+void CC2EditMain::onFlipHorizAction() {
+    doMapManipulation([&](cc2::MapSection& mapSect) {
+        mapSect.flipHoriz(true);
+    });
+}
+void CC2EditMain::onFlipVertAction() {
+    doMapManipulation([&](cc2::MapSection& mapSect) {
+        mapSect.flipVert(true);
+    });
+}
+
+void CC2EditMain::togglePaintFlag(CC2EditorWidget::PaintFlags flag, bool enabled) {
+    for (int i = 0; i < m_editorTabs->count(); ++i) {
+        CC2EditorWidget* editor = getEditorAt(i);
+        if (editor) {
+            if (enabled)
+                editor->setPaintFlag(flag);
+            else
+                editor->clearPaintFlag(flag);
+        }
+    }
 }
 
 void CC2EditMain::onViewViewportToggled(bool view)
 {
-    for (int i = 0; i < m_editorTabs->count(); ++i) {
-        CC2EditorWidget* editor = getEditorAt(i);
-        if (editor) {
-            if (view)
-                editor->setPaintFlag(CC2EditorWidget::ShowViewBox);
-            else
-                editor->clearPaintFlag(CC2EditorWidget::ShowViewBox);
-        }
-    }
+    togglePaintFlag(CC2EditorWidget::ShowViewBox, view);
 }
 
 void CC2EditMain::onViewMonsterPathsToggled(bool view)
 {
-    for (int i = 0; i < m_editorTabs->count(); ++i) {
-        CC2EditorWidget* editor = getEditorAt(i);
-        if (editor) {
-            if (view)
-                editor->setPaintFlag(CC2EditorWidget::ShowMovePaths);
-            else
-                editor->clearPaintFlag(CC2EditorWidget::ShowMovePaths);
-        }
-    }
+    togglePaintFlag(CC2EditorWidget::ShowMovePaths, view);
+}
+
+void CC2EditMain::onViewClipboardToggled(bool view)
+{
+    togglePaintFlag(CC2EditorWidget::ShowClipboard, view);
+}
+
+void CC2EditMain::onViewHoveredWireNetworkToggled(bool view)
+{
+    togglePaintFlag(CC2EditorWidget::ShowHoveredWires, view);
+}
+
+void CC2EditMain::onColorWireNetworksToggled(bool view)
+{
+    togglePaintFlag(CC2EditorWidget::ColorWireNetworks, view);
 }
 
 void CC2EditMain::onTilePicked(int x, int y)
@@ -2760,6 +2935,10 @@ void CC2EditMain::onTabChanged(int index)
     m_actions[ActionCopy]->setEnabled(false);
     m_actions[ActionPaste]->setEnabled(false);
     m_actions[ActionClear]->setEnabled(false);
+    m_actions[ActionRotateLeft]->setEnabled(!!mapEditor);
+    m_actions[ActionRotateRight]->setEnabled(!!mapEditor);
+    m_actions[ActionFlipHoriz]->setEnabled(!!mapEditor);
+    m_actions[ActionFlipVert]->setEnabled(!!mapEditor);
     m_actions[ActionToggleGreens]->setEnabled(!!mapEditor);
     m_actions[ActionTestCC2]->setEnabled(!!mapEditor);
     m_actions[ActionTestLexy]->setEnabled(!!mapEditor);

@@ -24,6 +24,7 @@
 #include <QPaintEvent>
 #include <QMouseEvent>
 #include <queue>
+#include <algorithm>
 
 static CC2EditorWidget::CombineMode select_cmode(Qt::KeyboardModifiers keys)
 {
@@ -197,7 +198,7 @@ static cc2::Tile directionalize(const cc2::Tile& tile, cc2::Tile::Direction dir)
 CC2EditorWidget::CC2EditorWidget(QWidget* parent)
     : QWidget(parent), m_tileset(), m_map(), m_drawMode(DrawPencil),
       m_paintFlags(), m_cachedButton(Qt::NoButton), m_lastDir(cc2::Tile::InvalidDir),
-      m_undoCommand(), m_zoomFactor(1.0)
+    m_undoCommand(), m_clipboardMap(), m_zoomFactor(1.0)
 {
     m_undoStack = new QUndoStack(this);
     connect(m_undoStack, &QUndoStack::canUndoChanged, this, &CC2EditorWidget::canUndoChanged);
@@ -211,13 +212,23 @@ CC2EditorWidget::CC2EditorWidget(QWidget* parent)
     m_editCache = new cc2::Map;
 }
 
-void CC2EditorWidget::setTileset(CC2ETileset* tileset)
-{
-    m_tileset = tileset;
+void CC2EditorWidget::rescaleTileBuffer() {
     const QSize size = mapSize();
     m_tileBuffer = QPixmap(size.width() * m_tileset->size(), size.height() * m_tileset->size());
     resize(sizeHint());
+    m_wireColoringFills = {};
+    for (QColor& color: getWireColoringColors()) {
+        QPixmap coloringFill(m_tileset->size(), m_tileset->size());
+        coloringFill.fill(color);
+        m_wireColoringFills.append(std::move(coloringFill));
+    }
     dirtyBuffer();
+}
+
+void CC2EditorWidget::setTileset(CC2ETileset* tileset)
+{
+    m_tileset = tileset;
+    rescaleTileBuffer();
 }
 
 void CC2EditorWidget::setMap(cc2::Map* map)
@@ -226,13 +237,9 @@ void CC2EditorWidget::setMap(cc2::Map* map)
     if (m_map)
         m_map->unref();
     m_map = map;
-
-    m_tileBuffer = QPixmap(m_map->mapData().width() * m_tileset->size(),
-                           m_map->mapData().height() * m_tileset->size());
-    resize(sizeHint());
+    rescaleTileBuffer();
 
     m_undoStack->clear();
-    dirtyBuffer();
 
     m_selectRect = QRect(-1, -1, -1, -1);
     emit hasSelection(false);
@@ -244,9 +251,7 @@ void CC2EditorWidget::resizeMap(const QSize& newSize)
     m_map->mapData().resize(newSize.width(), newSize.height());
     endEdit();
 
-    m_tileBuffer = QPixmap(newSize.width() * m_tileset->size(),
-                           newSize.height() * m_tileset->size());
-    resize(sizeHint());
+    rescaleTileBuffer();
 }
 
 void CC2EditorWidget::setDrawMode(DrawMode mode)
@@ -313,17 +318,180 @@ void CC2EditorWidget::resetClean()
     m_undoStack->resetClean();
 }
 
+static uint8_t cellGetNetworkWires(std::map<uint8_t, cc2::WireNetwork> networks, const QPoint& pos) {
+    uint8_t wires = 0;
+    for (auto& networkPair: networks) {
+        cc2::WireNetwork& network = networkPair.second;
+        if (network.members.find(pos) != network.members.end()) {
+            wires |= network.members[pos];
+        }
+    }
+    return wires;
+}
+static void setMatchingWireFill(CC2ETileset::WireFills& fills, uint8_t wires, CC2ETileset::WireColor fill) {
+    for (uint8_t idx = 0;idx < 4;idx += 1) {
+        if (!(wires & (1 << idx))) continue;
+        fills[idx] = fill;
+    }
+}
+
+// https://stackoverflow.com/questions/8517853/iterating-over-a-qmap-with-for/77994379#77994379
+template<typename T> class KeyValueRange {
+private:
+    T iterable; // This is either a reference or a moved-in value. The map data isn't copied.
+public:
+    KeyValueRange(T &iterable) : iterable(iterable) { }
+    KeyValueRange(std::remove_reference_t<T> &&iterable) noexcept : iterable(std::move(iterable)) { }
+    auto begin() const { return iterable.keyValueBegin(); }
+    auto end() const { return iterable.keyValueEnd(); }
+};
+
+template <typename T> auto asKeyValueRange(T &iterable) { return KeyValueRange<T &>(iterable); }
+template <typename T> auto asKeyValueRange(const T &iterable) { return KeyValueRange<const T &>(iterable); }
+template <typename T> auto asKeyValueRange(T &&iterable) noexcept { return KeyValueRange<T>(std::move(iterable)); }
+
+struct WireColorTracker {
+    // Have to use the std map for custom compare
+    std::map<const QPoint, CC2ETileset::WireFills, cc2::QPointCompareReadingOrder> coloredNetworks;
+    QMap<CC2ETileset::WireColor, int> colorUsage;
+    const QList<QPixmap>* colorsList;
+    WireColorTracker(const QList<QPixmap>& argColors): coloredNetworks(), colorsList(&argColors) {
+        for (auto& color: *colorsList) {
+            colorUsage[&color] = 0;
+        }
+    };
+    CC2ETileset::WireColor getLeastUsedColor(QSet<CC2ETileset::WireColor>& avoidIfPossible) {
+        CC2ETileset::WireColor foundColor = nullptr;
+        int colorAppearances = 0;
+        bool avoidRequestedColors = true;
+        if (avoidIfPossible.size() == colorUsage.size()) {
+            // If we're trying to avoid all available colors, give up and just use
+            // the one that's generally least used
+            avoidRequestedColors = false;
+        }
+        for (const QPixmap& color: *colorsList) {
+            int appearances = colorUsage[&color];
+            if (avoidRequestedColors && avoidIfPossible.contains(&color)) continue;
+            if (foundColor == nullptr || appearances < colorAppearances) {
+                foundColor = &color;
+                colorAppearances = appearances;
+            }
+        }
+        // We should always have a color here, `colorUsage` will always have more colors than we excluded
+        assert(foundColor != nullptr);
+        return foundColor;
+    };
+
+
+    QSet<CC2ETileset::WireColor> getNeighboringColors(const cc2::WireNetwork& network, const cc2::MapData& mapData) {
+        QSet<CC2ETileset::WireColor> nearColors;
+        QSize levelSize(mapData.width(), mapData.height());
+        for (auto& [memberPos, memberWires]: network.members) {
+            const cc2::Tile& memberTile = mapData.tile(memberPos.x(), memberPos.y()).bottom();
+            // Ignore tiles which just take power and don't have wires themselves
+            if (memberTile.wireSupport() == cc2::Tile::ReceivePower) continue;
+            for (uint8_t dirIdx = 0;dirIdx < 4;dirIdx += 1) {
+                auto dir = static_cast<cc2::Tile::Direction>(dirIdx);
+                std::optional<QPoint> neighPosMaybe = cc2::GetNeighborTile(memberPos, dir, levelSize, false);
+                if (!neighPosMaybe.has_value()) continue;
+                QPoint& neighPos = neighPosMaybe.value();
+                if (coloredNetworks.find(neighPos) == coloredNetworks.end()) continue;
+                for (auto color: coloredNetworks[neighPos]) {
+                    if (color == nullptr) continue;
+                    nearColors.insert(color);
+                }
+            }
+            // Also add colors on member tiles (this is useful eg. when we are coloring a horizontal wire on a crossed wire, and we've already colored the vertical wire)
+            if (coloredNetworks.find(memberPos) != coloredNetworks.end()) {
+                for (auto color: coloredNetworks[memberPos]) {
+                    if (color == nullptr) continue;
+                    nearColors.insert(color);
+                }
+            }
+        }
+        return nearColors;
+    }
+    void colorNetwork(const cc2::WireNetwork& network, const CC2ETileset::WireColor color, const cc2::MapData& mapData) {
+        colorUsage[color] += 1;
+        for (auto& [memberPos, memberWires]: network.members) {
+            const cc2::Tile& memberTile = mapData.tile(memberPos.x(), memberPos.y()).bottom();
+            if (memberTile.wireSupport() == cc2::Tile::ReceivePower) continue;
+            if (coloredNetworks.find(memberPos) == coloredNetworks.end()) {
+                coloredNetworks[memberPos] = {nullptr, nullptr, nullptr, nullptr};
+            }
+            for (uint8_t dirIdx = 0; dirIdx < 4; dirIdx += 1) {
+                uint8_t wires = 1 << dirIdx;
+                if (!(memberWires & wires)) continue;
+                coloredNetworks[memberPos][dirIdx] = color;
+            }
+        }
+    }
+    void setWireColors(CC2ETileset::WireFills& fills, const QPoint pos, const cc2::MapData& mapData) {
+        // We try to use a different color for each network, and adjacent networks shouldn't use the same color if possible
+        for (uint8_t dirIdx = 0;dirIdx < 4;dirIdx += 1) {
+            // Have to reread each iteration in case it was set a previous iteration
+            if (coloredNetworks.find(pos) != coloredNetworks.end()) {
+                // We already have a color set for this point, don't retrace and just use that
+                if (coloredNetworks[pos][dirIdx] != nullptr) {
+                    fills[dirIdx] = coloredNetworks[pos][dirIdx];
+                    continue;
+                }
+            }
+            auto dir = static_cast<cc2::Tile::Direction>(dirIdx);
+            cc2::WireNetwork network = cc2::TraceNetworkFromTileInDirection(mapData, pos, dir);
+            if (network.members.empty()) continue;
+            // For each network member, check othogonal neighbors for used colors which we shouldn't use
+            QSet<CC2ETileset::WireColor> toAvoid = getNeighboringColors(network, mapData);
+            CC2ETileset::WireColor color = getLeastUsedColor(toAvoid);
+            // Finally color all of our network members with the chosen color!
+            colorNetwork(network, color, mapData);
+            fills[dirIdx] = color;
+        }
+    }
+};
+
+void CC2EditorWidget::renderMapData(QPainter& painter, const cc2::MapData& mapData) {
+    std::optional<std::map<uint8_t, cc2::WireNetwork>> hoveredNetworks;
+    if (m_paintFlags & ShowHoveredWires) {
+        hoveredNetworks = cc2::TraceNetworksFromTile(m_map->mapData(), m_current);
+    }
+    std::optional<WireColorTracker> colorTracker;
+    if (m_paintFlags & ColorWireNetworks) {
+        colorTracker = WireColorTracker{m_wireColoringFills};
+    }
+    auto determineWireFills = [&](const QPoint pos){
+        CC2ETileset::WireFills fills = m_tileset->defaultWireFill();
+        const cc2::Tile& terrain = mapData.tile(pos.x(), pos.y()).bottom();
+        if (terrain.wireSupport() == cc2::Tile::NoSupport) return fills;
+        // ColorWireNetworks
+        if (terrain.wireSupport() != cc2::Tile::ReceivePower && colorTracker.has_value()) {
+            colorTracker.value().setWireColors(fills, pos, mapData);
+        }
+
+        // ShowHoveredWires
+        uint8_t hoveredWires = 0;
+        if (hoveredNetworks.has_value()) {
+            hoveredWires = cellGetNetworkWires(hoveredNetworks.value(), pos);
+        }
+        setMatchingWireFill(fills, hoveredWires, m_tileset->getLiveWireFill());
+        return fills;
+    };
+
+    for (int y = 0; y < mapData.height(); ++y) {
+        for (int x = 0; x < mapData.width(); ++x) {
+            m_tileset->draw(painter, x, y, &mapData.tile(x, y), true, determineWireFills(QPoint(x, y)));
+        }
+    }
+}
+
 void CC2EditorWidget::renderTileBuffer()
 {
     if (!m_map)
         return;
 
-    QPainter tilePainter(&m_tileBuffer);
+    QPainter mapPainter(&m_tileBuffer);
     const cc2::MapData& mapData = m_map->mapData();
-    for (int y = 0; y < mapData.height(); ++y) {
-        for (int x = 0; x < mapData.width(); ++x)
-            m_tileset->draw(tilePainter, x, y, &mapData.tile(x, y), true);
-    }
+    renderMapData(mapPainter, mapData);
 }
 
 void CC2EditorWidget::paintEvent(QPaintEvent*)
@@ -350,10 +518,11 @@ void CC2EditorWidget::renderTo(QPainter& painter)
 {
     if (m_cacheDirty) {
         renderTileBuffer();
-        m_tileCache = m_tileBuffer.scaled(renderSize());
+        m_tileCache = m_tileBuffer.scaled(renderSize(m_map->mapData()));
         m_cacheDirty = false;
     }
     painter.drawPixmap(0, 0, m_tileCache);
+
 
     if (m_selectRect != QRect(-1, -1, -1, -1)) {
         QRect selectionArea = calcTileRect(m_selectRect);
@@ -432,6 +601,19 @@ void CC2EditorWidget::renderTo(QPainter& painter)
     painter.setPen(QColor(255, 0, 0));
     for (const QPoint& hi : m_hilights)
         painter.drawRect(calcTileRect(hi.x(), hi.y()));
+
+    if ((m_paintFlags & ShowClipboard) && m_clipboardMap.has_value()) {
+        const cc2::MapData& clipMap = m_clipboardMap.value();
+        QPixmap clipBuffer(renderSize(clipMap));
+        QPainter clipPainter(&clipBuffer);
+        QRect clipSize = calcTileRect(m_current.x(), m_current.y(), clipMap.width(), clipMap.height());
+        renderMapData(clipPainter, clipMap);
+        painter.setOpacity(0.5);
+        painter.drawPixmap(clipSize.topLeft(), clipBuffer);
+        painter.setOpacity(1);
+        painter.setPen(QColor(127, 0, 255));
+        painter.drawRect(clipSize);
+    }
 }
 
 static QPoint findPlayer(const cc2::MapData& mapData)
@@ -463,20 +645,15 @@ QImage CC2EditorWidget::renderReport()
     return output;
 }
 
-QImage CC2EditorWidget::renderSelection()
+QImage CC2EditorWidget::renderMap(const cc2::MapData& map)
 {
-    if (m_selectRect == QRect(-1, -1, -1, -1))
-        return QImage();
-
     QImage output(m_tileset->size() * m_selectRect.width(),
                   m_tileset->size() * m_selectRect.height(),
                   QImage::Format_RGB32);
+
     QPainter painter(&output);
-    painter.drawPixmap(0, 0, m_tileBuffer,
-                       m_selectRect.x() * m_tileset->size(),
-                       m_selectRect.y() * m_tileset->size(),
-                       m_selectRect.width() * m_tileset->size(),
-                       m_selectRect.height() * m_tileset->size());
+    renderMapData(painter, map);
+
     return output;
 }
 
@@ -770,6 +947,9 @@ void CC2EditorWidget::mouseMoveEvent(QMouseEvent* event)
     if (m_current == QPoint(posX, posY) && !m_cacheDirty)
         return;
     m_current = QPoint(posX, posY);
+    if (m_paintFlags & ShowHoveredWires) {
+        m_cacheDirty = true;
+    }
 
     const cc2::MapData& map = m_map->mapData();
     if (m_cachedButton == Qt::MiddleButton && m_origin != QPoint(-1, -1)) {
@@ -1112,7 +1292,8 @@ void CC2EditorWidget::mouseReleaseEvent(QMouseEvent* event)
     m_lastDir = cc2::Tile::InvalidDir;
 }
 
-static uint32_t trackToActive(uint32_t trackModifier)
+
+static uint32_t getOneTrackAsActive(uint32_t trackModifier)
 {
     if ((trackModifier & cc2::TileModifier::Track_NE) != 0)
         return cc2::TileModifier::ActiveTrack_NE;
@@ -1128,6 +1309,26 @@ static uint32_t trackToActive(uint32_t trackModifier)
         return cc2::TileModifier::ActiveTrack_NS;
     return 0;
 }
+static std::vector<uint32_t> tracks = {cc2::TileModifier::Track_NE,cc2::TileModifier::Track_SE,cc2::TileModifier::Track_SW,cc2::TileModifier::Track_NW,cc2::TileModifier::Track_WE,cc2::TileModifier::Track_NS};
+
+static uint32_t getTrackFromActive(uint32_t trackModifier) {
+    return tracks[(trackModifier & cc2::TileModifier::ActiveTrack_MASK) >> 8];
+}
+
+static uint32_t getNextActiveTrackFromCurrent(uint32_t trackModifier) {
+    auto foundActiveTrackIter = std::find(
+        tracks.begin(),
+        tracks.end(),
+        getTrackFromActive(trackModifier)
+    );
+    auto activeTrackIdx = std::distance(tracks.begin(), foundActiveTrackIter);
+    // Can't just use iteration since we have to start from our index and wrap around
+    for (size_t idx = 1;idx < tracks.size();idx += 1) {
+        uint32_t currentTrack = tracks[(idx + activeTrackIdx) % tracks.size()];
+        if (currentTrack & trackModifier) return getOneTrackAsActive(currentTrack);
+    }
+    return getTrackFromActive(trackModifier);
+};
 
 static cc2::Tile::Direction cloneDirection(uint32_t modifier)
 {
@@ -1311,10 +1512,13 @@ void CC2EditorWidget::putTile(const cc2::Tile& tile, int x, int y, CombineMode m
             const uint32_t activeBase = trackTile.modifier() & ~cc2::TileModifier::ActiveTrack_MASK;
             if ((tile.modifier() & cc2::TileModifier::TrackDir_MASK) != 0) {
                 // Use the track in the current drawing tile
-                trackTile.setModifier(activeBase | trackToActive(tile.modifier()));
+                trackTile.setModifier(activeBase | getOneTrackAsActive(tile.modifier()));
+            } else if ((tile.modifier() & cc2::TileModifier::TrackSwitch) && (trackTile.modifier() & cc2::TileModifier::TrackSwitch)) {
+                // Cycle to the next active track
+                trackTile.setModifier(activeBase | getNextActiveTrackFromCurrent(trackTile.modifier()));
             } else {
                 // Find the first valid track and make it active
-                trackTile.setModifier(activeBase | trackToActive(trackTile.modifier()));
+                trackTile.setModifier(activeBase | getOneTrackAsActive(trackTile.modifier()));
             }
         }
     }
@@ -1366,9 +1570,7 @@ void CC2EditorWidget::updateForUndoCommand(const QUndoCommand* command)
     auto mapCommand = dynamic_cast<const MapUndoCommand*>(command);
     if (mapCommand) {
         if (mapCommand->id() == CC2EditHistory::EditResizeMap) {
-            m_tileBuffer = QPixmap(m_map->mapData().width() * m_tileset->size(),
-                                   m_map->mapData().height() * m_tileset->size());
-            resize(sizeHint());
+            rescaleTileBuffer();
         }
 
         dirtyBuffer();

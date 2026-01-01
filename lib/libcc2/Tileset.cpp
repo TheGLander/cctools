@@ -93,12 +93,12 @@ bool CC2ETileset::load(const QString& filename)
 }
 
 void CC2ETileset::drawAt(QPainter& painter, int x, int y, const cc2::Tile* tile,
-                         bool allLayers) const
+                         bool allLayers, const WireFills& wireFills) const
 {
     if (allLayers) {
         bool needXray = false;
         for (const cc2::Tile* lt : tile->sortedLayers()) {
-            drawLayer(painter, x, y, lt, needXray);
+            drawLayer(painter, x, y, lt, needXray, wireFills);
 
             cc2::Tile::DrawLayer lay = lt->layer();
             if ((lay == cc2::Tile::BaseLayer && lt->needXray())
@@ -107,17 +107,17 @@ void CC2ETileset::drawAt(QPainter& painter, int x, int y, const cc2::Tile* tile,
         }
     } else {
         painter.drawPixmap(x, y, m_gfx[cc2::G_Floor]);
-        drawLayer(painter, x, y, tile, false);
+        drawLayer(painter, x, y, tile, false, wireFills);
     }
 }
 
 void CC2ETileset::drawLayer(QPainter& painter, int x, int y, const cc2::Tile* tile,
-                            bool reveal) const
+                            bool reveal, const WireFills& wireFills) const
 {
     switch (tile->type()) {
     case cc2::Tile::Floor:
         if (tile->modifier() != 0) {
-            drawWires(painter, x, y, tile->modifier(), cc2::G_Floor);
+            drawWires(painter, x, y, tile->modifier(), cc2::G_Floor, wireFills);
             if ((tile->modifier() & cc2::TileModifier::WireMask) == cc2::TileModifier::WireMask)
                 painter.drawPixmap(x, y, m_gfx[cc2::G_Floor_Wire2]);
             else
@@ -184,11 +184,11 @@ void CC2ETileset::drawLayer(QPainter& painter, int x, int y, const cc2::Tile* ti
         painter.drawPixmap(x, y, m_gfx[cc2::G_ToggleFloor]);
         break;
     case cc2::Tile::Teleport_Red:
-        drawWires(painter, x, y, tile->modifier(), cc2::G_Floor);
+        drawWires(painter, x, y, tile->modifier(), cc2::G_Floor, wireFills);
         painter.drawPixmap(x, y, m_gfx[cc2::G_Teleport_Red]);
         break;
     case cc2::Tile::Teleport_Blue:
-        drawWires(painter, x, y, tile->modifier(), cc2::G_Floor);
+        drawWires(painter, x, y, tile->modifier(), cc2::G_Floor, wireFills);
         painter.drawPixmap(x, y, m_gfx[cc2::G_Teleport_Blue]);
         break;
     case cc2::Tile::Teleport_Yellow:
@@ -513,7 +513,7 @@ void CC2ETileset::drawLayer(QPainter& painter, int x, int y, const cc2::Tile* ti
         break;
     case cc2::Tile::SteelWall:
         if (tile->modifier() != 0) {
-            drawWires(painter, x, y, tile->modifier(), cc2::G_SteelWall);
+            drawWires(painter, x, y, tile->modifier(), cc2::G_SteelWall, wireFills);
             if ((tile->modifier() & cc2::TileModifier::WireMask) == cc2::TileModifier::WireMask)
                 painter.drawPixmap(x, y, m_gfx[cc2::G_SteelWall_Wire2]);
             else
@@ -725,7 +725,7 @@ void CC2ETileset::drawLayer(QPainter& painter, int x, int y, const cc2::Tile* ti
         painter.drawPixmap(x, y, m_gfx[cc2::G_InvalidBase]);
         break;
     case cc2::Tile::LogicButton:
-        drawWires(painter, x, y, tile->modifier(), cc2::G_Floor);
+        drawWires(painter, x, y, tile->modifier(), cc2::G_Floor, wireFills);
         painter.drawPixmap(x, y, m_gfx[cc2::G_LogicSwitch]);
         break;
     case cc2::Tile::FlameJet_Off:
@@ -940,15 +940,15 @@ void CC2ETileset::drawLayer(QPainter& painter, int x, int y, const cc2::Tile* ti
         painter.drawPixmap(x, y, m_gfx[cc2::G_InvalidBase]);
         break;
     case cc2::Tile::RevLogicButton:
-        drawWires(painter, x, y, tile->modifier(), cc2::G_Floor);
+        drawWires(painter, x, y, tile->modifier(), cc2::G_Floor, wireFills);
         painter.drawPixmap(x, y, m_gfx[cc2::G_RevLogicButton]);
         break;
     case cc2::Tile::Switch_Off:
-        drawWires(painter, x, y, tile->modifier(), cc2::G_Switch_Base);
+        drawWires(painter, x, y, tile->modifier(), cc2::G_Switch_Base, wireFills);
         painter.drawPixmap(x, y, m_gfx[cc2::G_Switch_Off]);
         break;
     case cc2::Tile::Switch_On:
-        drawWires(painter, x, y, tile->modifier(), cc2::G_Switch_Base);
+        drawWires(painter, x, y, tile->modifier(), cc2::G_Switch_Base, wireFills);
         painter.drawPixmap(x, y, m_gfx[cc2::G_Switch_On]);
         break;
     case cc2::Tile::KeyThief:
@@ -1123,23 +1123,23 @@ void CC2ETileset::drawTracks(QPainter& painter, int x, int y, uint32_t tracks) c
 }
 
 void CC2ETileset::drawWires(QPainter& painter, int x, int y, uint32_t wireMask,
-                            cc2::GraphicIndex base) const
+                            cc2::GraphicIndex base, const WireFills& wireFills) const
 {
     // TODO: This assumes wires are always 2 pixels wide and aligned to
     // the center of the tileset...
     const int mid = m_size / 2;
     painter.drawPixmap(x, y, m_gfx[base]);
     if (wireMask & cc2::TileModifier::WireNorth)
-        painter.drawPixmap(x + mid - 1, y, m_gfx[cc2::G_WireFill],
+        painter.drawPixmap(x + mid - 1, y, *wireFills[0],
                            mid - 1, 0, 2, mid + 1);
     if (wireMask & cc2::TileModifier::WireEast)
-        painter.drawPixmap(x + mid - 1, y + mid - 1, m_gfx[cc2::G_WireFill],
+        painter.drawPixmap(x + mid - 1, y + mid - 1, *wireFills[1],
                            mid - 1, mid - 1, mid + 1, 2);
     if (wireMask & cc2::TileModifier::WireSouth)
-        painter.drawPixmap(x + mid - 1, y + mid - 1, m_gfx[cc2::G_WireFill],
+        painter.drawPixmap(x + mid - 1, y + mid - 1, *wireFills[2],
                            mid - 1, mid - 1, 2, mid + 1);
     if (wireMask & cc2::TileModifier::WireWest)
-        painter.drawPixmap(x, y + mid - 1, m_gfx[cc2::G_WireFill],
+        painter.drawPixmap(x, y + mid - 1, *wireFills[3],
                            0, mid - 1, mid + 1, 2);
 }
 

@@ -18,6 +18,9 @@
 #include "GameLogic.h"
 
 #include <QPoint>
+#include <QSize>
+#include <queue>
+#include <optional>
 
 #define TILE_DIR(dir)   (cc2::Tile::Direction)((dir) & 0x03)
 
@@ -528,9 +531,8 @@ QPoint cc2::AdvanceCreature(const QPoint& pos, MoveState state)
     return result;
 }
 
-void cc2::ToggleGreens(Map* map)
+void cc2::ToggleGreens(MapData& mapData)
 {
-    MapData& mapData = map->mapData();
     for (int y = 0; y < mapData.height(); ++y) {
         for (int x = 0; x < mapData.width(); ++x) {
             cc2::Tile* tile = &mapData.tile(x, y);
@@ -555,4 +557,227 @@ void cc2::ToggleGreens(Map* map)
             }
         }
     }
+}
+
+std::optional<QPoint> cc2::GetNeighborTile(const QPoint& point, Tile::Direction dir, QSize size, bool wrap) {
+    switch(dir) {
+    case cc2::Tile::North:
+        if (point.y() == 0) return {};
+        return QPoint(point.x(), point.y() - 1);
+    case cc2::Tile::South:
+        if (point.y() == size.height() - 1) return {};
+        return QPoint(point.x(), point.y() + 1);
+    case cc2::Tile::East:
+        if (point.x() == size.width() - 1) {
+            if (!wrap) return {};
+            if (point.y() == size.height() - 1) return {};
+            return QPoint(0, point.y() + 1);
+        }
+        return QPoint(point.x() + 1, point.y());
+    case cc2::Tile::West:
+        if (point.x() == 0) {
+            if (!wrap) return {};
+            if (point.y() == 0) return {};
+            return QPoint(size.width() - 1, point.y() - 1);
+        }
+        return QPoint(point.x() - 1, point.y());
+    default:
+        return {};
+    }
+}
+
+static uint8_t dirToWire(cc2::Tile::Direction dir) {
+    return 1 << dir;
+}
+static cc2::Tile::Direction oppositeDir(cc2::Tile::Direction dir) {
+    switch (dir) {
+    case cc2::Tile::North: return cc2::Tile::South;
+    case cc2::Tile::South: return cc2::Tile::North;
+    case cc2::Tile::West: return cc2::Tile::East;
+    case cc2::Tile::East: return cc2::Tile::West;
+    default: return cc2::Tile::InvalidDir;
+    }
+}
+static cc2::Tile::Direction wireToDir(uint8_t wire) {
+    if (wire & 0x1) return cc2::Tile::North;
+    if (wire & 0x2) return cc2::Tile::East;
+    if (wire & 0x4) return cc2::Tile::South;
+    if (wire & 0x8) return cc2::Tile::West;
+    return cc2::Tile::InvalidDir;
+}
+
+static uint8_t getWires(const cc2::Tile& tile) {
+    if (tile.type() != cc2::Tile::LogicGate) return tile.modifier() & 0xf;
+    switch (tile.modifier()) {
+        case cc2::TileModifier::Inverter_N:
+        case cc2::TileModifier::Inverter_S:
+            return 0b0101;
+        case cc2::TileModifier::Inverter_E:
+        case cc2::TileModifier::Inverter_W:
+            return 0b1010;
+        case cc2::TileModifier::AndGate_N:
+        case cc2::TileModifier::OrGate_N:
+        case cc2::TileModifier::XorGate_N:
+        case cc2::TileModifier::NandGate_N:
+        case cc2::TileModifier::LatchGateCW_N:
+        case cc2::TileModifier::LatchGateCCW_N:
+            return 0b1011;
+        case cc2::TileModifier::AndGate_E:
+        case cc2::TileModifier::OrGate_E:
+        case cc2::TileModifier::XorGate_E:
+        case cc2::TileModifier::NandGate_E:
+        case cc2::TileModifier::LatchGateCW_E:
+        case cc2::TileModifier::LatchGateCCW_E:
+            return 0b0111;
+        case cc2::TileModifier::AndGate_S:
+        case cc2::TileModifier::OrGate_S:
+        case cc2::TileModifier::XorGate_S:
+        case cc2::TileModifier::NandGate_S:
+        case cc2::TileModifier::LatchGateCW_S:
+        case cc2::TileModifier::LatchGateCCW_S:
+            return 0b1110;
+        case cc2::TileModifier::AndGate_W:
+        case cc2::TileModifier::OrGate_W:
+        case cc2::TileModifier::XorGate_W:
+        case cc2::TileModifier::NandGate_W:
+        case cc2::TileModifier::LatchGateCW_W:
+        case cc2::TileModifier::LatchGateCCW_W:
+            return 0b1101;
+        case cc2::TileModifier::CounterGate_0:
+        case cc2::TileModifier::CounterGate_1:
+        case cc2::TileModifier::CounterGate_2:
+        case cc2::TileModifier::CounterGate_3:
+        case cc2::TileModifier::CounterGate_4:
+        case cc2::TileModifier::CounterGate_5:
+        case cc2::TileModifier::CounterGate_6:
+        case cc2::TileModifier::CounterGate_7:
+        case cc2::TileModifier::CounterGate_8:
+        case cc2::TileModifier::CounterGate_9:
+            return 0b1111;
+        default:
+            return 0b0000;
+    }
+}
+
+static uint8_t getWireTunnels(const cc2::Tile& tile) {
+    return tile.type() == cc2::Tile::Floor ? ((tile.modifier() & 0xf0) >> 4) : 0;
+}
+
+static uint8_t getOutWires(const cc2::Tile& tile, cc2::Tile::Direction checkingFrom, bool allowTunnel) {
+    cc2::Tile::WireSupport wireSupport = tile.wireSupport();
+    uint8_t wires = getWires(tile);
+    uint8_t wireTunnels = getWireTunnels(tile);
+    uint8_t exposedWires = allowTunnel ? wires : wires & ~(wireTunnels);
+    uint8_t connectingWire = dirToWire(checkingFrom);
+
+    if (wireSupport == cc2::Tile::NoSupport) return 0;
+    if (wireSupport == cc2::Tile::ReceivePower) {
+        if (tile.type() == cc2::Tile::Teleport_Red && wires == 0) return 0;
+        return connectingWire;
+    }
+    if (!(exposedWires & connectingWire)) return 0;
+
+    switch (wireSupport) {
+    case cc2::Tile::ConductNone: return connectingWire;
+    case cc2::Tile::ConductCross: if (wires != 0xf) return wires;
+        /* fallthrough */
+    case cc2::Tile::ConductAlwaysCross: return (connectingWire & 0b0101 ? 0b0101 : 0b1010) & wires;
+    case cc2::Tile::ConductEverywhere: return wires;
+    default: return 0;
+    }
+}
+
+static std::optional<const QPoint> traceWireTunnel(const cc2::MapData& map, const QPoint& initPos, cc2::Tile::Direction initDir) {
+    QSize levelSize(map.width(), map.height());
+    uint8_t nestedLevel = 0;
+    uint8_t openTunnel = dirToWire(initDir);
+    uint8_t closeTunnel = dirToWire(oppositeDir(initDir));
+    QPoint pos = initPos;
+    while (true) {
+        std::optional<QPoint> newPos = cc2::GetNeighborTile(pos, initDir, levelSize, false);
+        if (!newPos.has_value()) return {};
+        pos = std::move(newPos.value());
+        const cc2::Tile& tile = map.tile(pos.x(), pos.y()).bottom();
+        uint8_t tunnels = getWireTunnels(tile);
+        if (tunnels & closeTunnel) {
+            if (nestedLevel == 0) return pos;
+            else nestedLevel -= 1;
+        }
+        if (tunnels & openTunnel) {
+            nestedLevel += 1;
+        }
+    }
+}
+
+cc2::WireNetwork cc2::TraceNetworkFromTileInDirection(const MapData& map, const QPoint& initPos, cc2::Tile::Direction initDir) {
+    WireNetwork network {};
+    std::queue<std::tuple<const QPoint, Tile::Direction, bool>> toTrace;
+    QSize size(map.width(), map.height());
+    toTrace.push({initPos, oppositeDir(initDir), true});
+    bool initTrace = true;
+    while (!toTrace.empty()) {
+        auto [pos, goingInDir, allowTunnelConnection] = toTrace.front();
+        toTrace.pop();
+        const cc2::Tile& terrain = map.tile(pos.x(), pos.y()).bottom();
+        uint8_t wires = getOutWires(terrain, oppositeDir(goingInDir), allowTunnelConnection);
+        if (wires == 0 && initTrace) {
+            network.members.clear();
+            return network;
+        }
+        initTrace = false;
+        if (wires == 0) continue;
+        if (network.members.find(pos) == network.members.end()) {
+            network.members[pos] = wires;
+        } else {
+            network.members[pos] |= wires;
+        }
+        uint8_t tunnels = getWireTunnels(terrain);
+        for (int dirIdx = Tile::North; dirIdx <= Tile::West; dirIdx += 1) {
+            Tile::Direction dir = static_cast<Tile::Direction>(dirIdx);
+            uint8_t dirWire = dirToWire(dir);
+            if (!(dirWire & wires)) continue;
+            std::optional<const QPoint> neighPosOpt;
+            bool isTunnel = dirWire & tunnels;
+            // This is very, very dumb. Any better way to do this?
+            if (isTunnel) {
+                std::optional<const QPoint> neighPosOpt2 = traceWireTunnel(map, pos, dir);
+                if (neighPosOpt2.has_value()) {
+                    neighPosOpt.emplace(neighPosOpt2.value());
+                }
+            } else {
+                std::optional<const QPoint> neighPosOpt2 = GetNeighborTile(pos, dir, size, true);
+                if (neighPosOpt2.has_value()) {
+                    neighPosOpt.emplace(neighPosOpt2.value());
+                }
+            }
+            if (!neighPosOpt.has_value()) continue;
+            const QPoint& neighPos = neighPosOpt.value();
+            if (network.members.find(neighPos) != network.members.end() && (network.members[neighPos] & dirToWire(oppositeDir(dir)))) continue;
+            toTrace.push({neighPos, dir, isTunnel});
+
+        }
+    }
+    return network;
+}
+
+std::map<uint8_t, cc2::WireNetwork> cc2::TraceNetworksFromTile(const MapData& map, const QPoint& initPos) {
+    std::map<uint8_t, WireNetwork> networks;
+    for (int dirIdx = Tile::North; dirIdx <= Tile::West; dirIdx += 1) {
+        Tile::Direction dir = static_cast<Tile::Direction>(dirIdx);
+        // If any network already has this wire direction, there's no need to retrace it
+        bool alreadyTraced = false;
+        for (auto& [wires, _]: networks) {
+            if (wires & dirToWire(dir)) {
+                alreadyTraced = true;
+                break;
+            }
+        }
+        if (alreadyTraced) continue;
+        WireNetwork network = TraceNetworkFromTileInDirection(map, initPos, dir);
+        if (network.members.empty()) continue;
+        uint8_t containedWires = network.members[initPos];
+        networks[containedWires] = std::move(network);
+    }
+
+    return networks;
 }

@@ -24,6 +24,7 @@
 #include "libcc2/Tileset.h"
 #include "EditorWidget.h"
 #include "ScriptEditor.h"
+#include <functional>
 
 class QLabel;
 class QListWidget;
@@ -50,6 +51,8 @@ public:
     bool saveTabAs(int index);
     bool saveMap(cc2::Map* map, const QString& filename);
     bool saveScript(const QString& script, const QString& filename);
+
+    void togglePaintFlag(CC2EditorWidget::PaintFlags flag, bool enabled);
 
     void populateTilesets();
     void loadTileset(CC2ETileset* tileset);
@@ -95,10 +98,19 @@ private slots:
     void onDrawWireAction(bool);
     void onInspectHints(bool);
     void onInspectTiles(bool);
+
+    void onClipboardManipToggle(bool);
+    void onRotateLeftAction();
+    void onRotateRightAction();
+    void onFlipHorizAction();
+    void onFlipVertAction();
     void onToggleGreensAction();
 
     void onViewViewportToggled(bool);
     void onViewMonsterPathsToggled(bool);
+    void onViewClipboardToggled(bool);
+    void onViewHoveredWireNetworkToggled(bool);
+    void onColorWireNetworksToggled(bool);
 
     void onTilePicked(int x, int y);
 
@@ -141,8 +153,11 @@ private:
         ActionSelect, ActionCut, ActionCopy, ActionPaste, ActionClear,
         ActionUndo, ActionRedo, ActionDrawPencil, ActionDrawLine, ActionDrawRect,
         ActionDrawFill, ActionDrawFlood, ActionPathMaker, ActionDrawWire,
-        ActionInspectHints, ActionInspectTiles, ActionToggleGreens,
-        ActionViewViewport, ActionViewMonsterPaths, ActionZoom200, ActionZoom150,
+        ActionInspectHints, ActionInspectTiles,
+        ActionClipboardManip, ActionRotateLeft, ActionRotateRight, ActionFlipHoriz,
+        ActionFlipVert, ActionToggleGreens,
+        ActionViewViewport, ActionViewMonsterPaths, ActionViewClipboard,
+        ActionViewHoveredWireNetwork, ActionColorWireNetworks, ActionZoom200, ActionZoom150,
         ActionZoom100, ActionZoom75, ActionZoom50, ActionZoom25, ActionZoom125,
         ActionZoomCust, ActionZoomFit, ActionTestCC2, ActionTestLexy,
         ActionTestSetup, ActionAbout,
@@ -182,9 +197,21 @@ private:
     QProcess* m_subProc;
     QString m_testGameDir;
 
+    bool m_manipulateClipboard;
+
     void registerTileset(const QString& filename);
     void loadEditorForItem(QListWidgetItem* item);
     void populateRecentFiles();
+
+    void clearTiles(QRect rect);
+
+    std::optional<cc2::MapSection> getMapSection(QRect fromRect);
+    void pasteMapSection(cc2::MapSection map, QRect toRect);
+    std::optional<cc2::MapSection> getClipboardMapSection();
+    void writeMapSectionToClipboard(const cc2::MapSection& map);
+    void doMapManipulation(std::function<void(cc2::MapSection&)> manipulator);
+
+
 };
 
 #endif // _CC2EDIT_H

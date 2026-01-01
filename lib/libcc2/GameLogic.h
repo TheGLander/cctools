@@ -19,6 +19,8 @@
 #define _CC2_GAMELOGIC_H
 
 #include "Map.h"
+#include <QPoint>
+#include <optional>
 
 namespace cc2 {
 
@@ -40,7 +42,23 @@ MoveState CheckMove(const MapData& map, const Tile* tile, int x, int y);
 void TurnCreature(Tile* tile, MoveState state);
 QPoint AdvanceCreature(const QPoint& pos, MoveState state);
 
-void ToggleGreens(Map* map);
+struct QPointCompareReadingOrder {
+    bool operator()(const QPoint& left, const QPoint& right) const {
+        if (left.y() < right.y()) return true;
+        if (left.y() > right.y()) return false;
+        if (left.x() < right.x()) return true;
+        return false;
+    };
+};
+
+struct WireNetwork {
+    std::map<const QPoint, uint8_t, QPointCompareReadingOrder> members;
+};
+std::optional<QPoint> GetNeighborTile(const QPoint& point, cc2::Tile::Direction dir, QSize size, bool wrap);
+WireNetwork TraceNetworkFromTileInDirection(const MapData& map, const QPoint& pos, Tile::Direction dir);
+std::map<uint8_t, WireNetwork> TraceNetworksFromTile(const MapData& map, const QPoint& pos);
+
+void ToggleGreens(MapData& map);
 
 }
 

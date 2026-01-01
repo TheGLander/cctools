@@ -352,8 +352,20 @@ public:
     bool isOtherClass() const { return tileClass() == ClassOther; }
     bool isInvalidClass() const { return tileClass() == ClassInvalid; }
 
-    void rotateLeft();
-    void rotateRight();
+    enum WireSupport {
+        NoSupport,
+        ReceivePower,
+        ConductNone,
+        ConductCross,
+        ConductAlwaysCross,
+        ConductEverywhere,
+    };
+    static WireSupport wireSupport(int type);
+    WireSupport wireSupport() const { return wireSupport(m_type); }
+
+    void rotateLeft(bool allowNonGeometric);
+    void rotateRight(bool allowNonGeometric);
+    void flipHoriz();
 
 private:
     uint8_t m_type;
@@ -389,7 +401,7 @@ public:
     uint8_t width() const { return m_width; }
     uint8_t height() const { return m_height; }
 
-    void resize(uint8_t width, uint8_t height);
+    void resize(uint8_t width, uint8_t height, uint8_t copyOffsetX = 0, uint8_t copyOffsetY = 0);
 
     std::tuple<int, int> countChips() const;
     std::tuple<int, int> countPoints() const;
@@ -506,9 +518,9 @@ private:
     std::vector<CC2FieldStorage> m_unknown;
 };
 
-class ClipboardMap {
+class MapSection {
 public:
-    ClipboardMap() = default;
+    MapSection() = default;
 
     MapData& mapData() { return m_mapData; }
     const MapData& mapData() const { return m_mapData; }
@@ -519,9 +531,18 @@ public:
     void read(ccl::Stream* stream);
     void write(ccl::Stream* stream) const;
 
+    void rotateRight(bool rotateTiles);
+    void rotateLeft(bool rotateTiles);
+    void flipHoriz(bool rotateTiles);
+    void flipVert(bool rotateTiles);
+    void flipMainDiag(bool rotateTiles);
+    void flipAntiDiag(bool rotateTiles);
+
 private:
     MapData m_mapData;
     std::vector<std::string> m_clueData;
+    size_t findClosestHintIndex(QPoint pos) const;
+    void swapTiles(QPoint a, QPoint b);
 };
 
 class SaveData {

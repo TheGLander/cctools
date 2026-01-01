@@ -19,6 +19,7 @@
 #include "libcc1/Levelset.h"
 
 #include <QtGlobal>
+#include <QPoint>
 #include <algorithm>
 #include <memory>
 #include <cstring>
@@ -543,6 +544,47 @@ cc2::Tile::TileClass cc2::Tile::tileClass(int type)
     }
 }
 
+cc2::Tile::WireSupport cc2::Tile::wireSupport(int type) {
+    switch (type) {
+    case Trap:
+    case Trap_Open:
+    case Cloner:
+    case FlameJet_On:
+    case FlameJet_Off:
+    case Force_N:
+    case Force_E:
+    case Force_S:
+    case Force_W:
+    case TrainTracks:
+    case RevolvDoor_NW:
+    case RevolvDoor_NE:
+    case RevolvDoor_SE:
+    case RevolvDoor_SW:
+    case ToggleWall:
+    case ToggleFloor:
+    case StayUpGWall:
+    case PopDownGWall:
+    // NOTE: These two can technically have wires, but to be wired, they just need to have *an* exit wire (and *a* connecting wire), not requiring them to be aligned
+    case Teleport_Red:
+    case Transformer:
+        return ReceivePower;
+    case LogicButton:
+    case Switch_Off:
+    case Switch_On:
+    case LogicGate:
+        return ConductNone;
+    case Floor:
+    case SteelWall:
+        return ConductCross;
+    case RevLogicButton:
+        return ConductAlwaysCross;
+    case Teleport_Blue:
+        return ConductEverywhere;
+    default:
+        return NoSupport;
+    }
+}
+
 bool cc2::Tile::needArrows() const
 {
     switch (m_type) {
@@ -567,20 +609,27 @@ static constexpr  uint8_t ror4(uint8_t bits)
     const uint8_t rbits = ((bits >> 1) & 0x07) | ((bits & 0x01) << 3);
     return (bits & 0xf0) | rbits;
 }
+static constexpr uint8_t flh4(uint8_t bits)
+{
+    const uint8_t rbits = (bits & 0b0101) | (bits & 0b0010 ? 0b1000 : 0) | (bits & 0b1000 ? 0b0010 : 0);
+    return (bits & 0xf0) | rbits;
+}
+static constexpr uint8_t fxh4(uint8_t bits)
+{
+    const uint8_t rbits = (bits & 0b0001 ? 0b1000 : 0) | (bits & 0b1000 ? 0b0001 : 0)
+                          | (bits & 0b0010 ? 0b0100 : 0) | (bits & 0b0100 ? 0b0010 : 0);
+    return (bits & 0xf0) | rbits;
+}
 
-void cc2::Tile::rotateLeft()
+
+void cc2::Tile::rotateLeft(bool allowNonGeometric)
 {
     if (haveDirection())
         m_direction = (m_direction + 3) % 4;
 
     switch (m_type) {
     case Floor:
-        // Actually rotating wire tunnels
-        {
-            uint8_t wires = ror4(m_modifier) & 0x0f;
-            wires |= (wires << 4);
-            m_modifier = (m_modifier & ~0xff) | wires;
-        }
+        m_modifier = ror4(m_modifier & 0x0f) | (ror4((m_modifier >> 4) & 0x0f) << 4);
         break;
     case PanelCanopy:
     case DirBlock:
@@ -588,7 +637,9 @@ void cc2::Tile::rotateLeft()
         break;
     case StyledFloor:
     case StyledWall:
-        m_modifier = (m_modifier + 3) % 4;
+        if (allowNonGeometric) {
+            m_modifier = (m_modifier + 3) % 4;
+        }
         break;
     case Cloner:
         m_modifier = ror4(m_modifier);
@@ -640,42 +691,47 @@ void cc2::Tile::rotateLeft()
         }
         break;
     case Switch_Off:
-        setType(Switch_On);
+        if (allowNonGeometric) {
+            setType(Switch_On);
+        }
         break;
     case Switch_On:
-        setType(Switch_Off);
+        if (allowNonGeometric) {
+            setType(Switch_Off);
+        }
         break;
     case LogicGate:
         if (m_modifier >= TileModifier::CounterGate_0 && m_modifier <= TileModifier::CounterGate_9) {
-            m_modifier = ((m_modifier - cc2::TileModifier::CounterGate_0) + 9) % 10
-                         + cc2::TileModifier::CounterGate_0;
+            if (allowNonGeometric) {
+                m_modifier = ((m_modifier - cc2::TileModifier::CounterGate_0) + 9) % 10
+                     + cc2::TileModifier::CounterGate_0;
+            }
         } else {
             m_modifier = ((m_modifier + 3) % 4) | (m_modifier & ~0x03);
         }
         break;
     case AsciiGlyph:
-        m_modifier = ((m_modifier - cc2::TileModifier::GlyphMIN + cc2::TileModifier::GlyphCOUNT - 1)
+        if (allowNonGeometric) {
+            m_modifier = ((m_modifier - cc2::TileModifier::GlyphMIN + cc2::TileModifier::GlyphCOUNT - 1)
                             % cc2::TileModifier::GlyphCOUNT)
                      + cc2::TileModifier::GlyphMIN;
+        } else if (TileModifier::GlyphUp <= m_modifier && m_modifier <= TileModifier::GlyphLeft) {
+            m_modifier = (m_modifier - TileModifier::GlyphUp + 3) % 4 + TileModifier::GlyphUp;
+        }
         break;
     default:
         break;
     }
 }
 
-void cc2::Tile::rotateRight()
+void cc2::Tile::rotateRight(bool allowNonGeometric)
 {
     if (haveDirection())
         m_direction = (m_direction + 1) % 4;
 
     switch (m_type) {
     case Floor:
-        // Actually rotating wire tunnels
-        {
-            uint8_t wires = rol4(m_modifier) & 0x0f;
-            wires |= (wires << 4);
-            m_modifier = (m_modifier & ~0xff) | wires;
-        }
+        m_modifier = rol4(m_modifier & 0x0f) | (rol4((m_modifier >> 4) & 0x0f) << 4);
         break;
     case PanelCanopy:
     case DirBlock:
@@ -683,7 +739,9 @@ void cc2::Tile::rotateRight()
         break;
     case StyledFloor:
     case StyledWall:
-        m_modifier = (m_modifier + 1) % 4;
+        if (allowNonGeometric) {
+            m_modifier = (m_modifier + 1) % 4;
+        }
         break;
     case Cloner:
         m_modifier = rol4(m_modifier);
@@ -735,23 +793,106 @@ void cc2::Tile::rotateRight()
         }
         break;
     case Switch_Off:
-        setType(Switch_On);
+        if (allowNonGeometric) {
+            setType(Switch_On);
+        }
         break;
     case Switch_On:
-        setType(Switch_Off);
+        if (allowNonGeometric) {
+            setType(Switch_Off);
+        }
         break;
     case LogicGate:
         if (m_modifier >= TileModifier::CounterGate_0 && m_modifier <= TileModifier::CounterGate_9) {
-            m_modifier = ((m_modifier - TileModifier::CounterGate_0) + 1) % 10
-                         + TileModifier::CounterGate_0;
+            if (allowNonGeometric) {
+                m_modifier = ((m_modifier - TileModifier::CounterGate_0) + 1) % 10
+                     + TileModifier::CounterGate_0;
+            }
         } else {
             m_modifier = ((m_modifier + 1) % 4) | (m_modifier & ~0x03);
         }
         break;
     case AsciiGlyph:
-        m_modifier = ((m_modifier - cc2::TileModifier::GlyphMIN + 1)
-                            % cc2::TileModifier::GlyphCOUNT)
+        if (allowNonGeometric) {
+            m_modifier = ((m_modifier - cc2::TileModifier::GlyphMIN + 1)
+                        % cc2::TileModifier::GlyphCOUNT)
                      + cc2::TileModifier::GlyphMIN;
+        } else if (TileModifier::GlyphUp <= m_modifier && m_modifier <= TileModifier::GlyphLeft) {
+            m_modifier = (m_modifier - TileModifier::GlyphUp + 1) % 4 + TileModifier::GlyphUp;
+        }
+
+        break;
+    default:
+        break;
+    }
+}
+
+template<typename Dir>
+static Dir dirFlipHoriz(Dir dir) {
+    if (dir == cc2::Tile::East) return cc2::Tile::West;
+    else if (dir == cc2::Tile::West) return cc2::Tile::East;
+    else return dir;
+}
+
+void cc2::Tile::flipHoriz()
+{
+    if (haveDirection())
+        m_direction = dirFlipHoriz(m_direction);
+
+    switch (m_type) {
+    case Floor:
+        m_modifier = flh4(m_modifier & 0x0f) | (flh4((m_modifier >> 4) & 0x0f) << 4);
+        break;
+    case PanelCanopy:
+    case DirBlock:
+        m_tileFlags = flh4(m_tileFlags);
+        break;
+    case Cloner:
+        m_modifier = flh4(m_modifier);
+        break;
+    case Ice_NE:
+        setType(Ice_NW);
+        break;
+    case Ice_SE:
+        setType(Ice_SW);
+        break;
+    case Ice_SW:
+        setType(Ice_SE);
+        break;
+    case Ice_NW:
+        setType(Ice_NE);
+        break;
+    case Force_E:
+        setType(Force_W);
+        break;
+    case Force_W:
+        setType(Force_E);
+        break;
+    case RevolvDoor_SW:
+        setType(RevolvDoor_SE);
+        break;
+    case RevolvDoor_NW:
+        setType(RevolvDoor_NE);
+        break;
+    case RevolvDoor_NE:
+        setType(RevolvDoor_NW);
+        break;
+    case RevolvDoor_SE:
+        setType(RevolvDoor_SW);
+        break;
+    case TrainTracks:
+        m_modifier = (m_modifier & ~0x2f) | fxh4(m_modifier);
+        break;
+    case LogicGate:
+        if (m_modifier >= TileModifier::CounterGate_0 && m_modifier <= TileModifier::CounterGate_9) {
+        } else {
+            m_modifier = dirFlipHoriz(m_modifier % 4) | (m_modifier & ~0x03);
+        }
+        break;
+    case AsciiGlyph:
+        if (TileModifier::GlyphUp <= m_modifier && m_modifier <= TileModifier::GlyphLeft) {
+            m_modifier = dirFlipHoriz(m_modifier - TileModifier::GlyphUp) + TileModifier::GlyphUp;
+        }
         break;
     default:
         break;
@@ -1132,7 +1273,7 @@ void cc2::MapData::write(ccl::Stream* stream) const
         m_map[i].write(stream);
 }
 
-void cc2::MapData::resize(uint8_t width, uint8_t height)
+void cc2::MapData::resize(uint8_t width, uint8_t height, uint8_t copyOffsetX, uint8_t copyOffsetY)
 {
     if (width == 0 || height == 0) {
         delete[] m_map;
@@ -1145,11 +1286,11 @@ void cc2::MapData::resize(uint8_t width, uint8_t height)
     Tile* newMap = new Tile[width * height];
 
     // Copy the old map if possible
-    uint8_t copyWidth = std::min(m_width, width);
-    uint8_t copyHeight = std::min(m_height, height);
+    uint8_t copyWidth = std::min((uint8_t)(m_width - copyOffsetX), width);
+    uint8_t copyHeight = std::min((uint8_t)(m_height - copyOffsetY), height);
     for (uint8_t y = 0; y < copyHeight; ++y) {
         for (uint8_t x = 0; x < copyWidth; ++x)
-            newMap[(y * width) + x] = m_map[(y * m_width) + x];
+            newMap[(y * width) + x] = m_map[((y + copyOffsetY) * m_width) + x + copyOffsetX];
     }
 
     delete[] m_map;
@@ -1614,7 +1755,7 @@ void cc2::Map::deleteClue(int x, int y)
 }
 
 
-void cc2::ClipboardMap::read(ccl::Stream* stream)
+void cc2::MapSection::read(ccl::Stream* stream)
 {
     char tag[4];
     uint32_t size;
@@ -1652,7 +1793,7 @@ void cc2::ClipboardMap::read(ccl::Stream* stream)
     }
 }
 
-void cc2::ClipboardMap::write(ccl::Stream* stream) const
+void cc2::MapSection::write(ccl::Stream* stream) const
 {
     ccl::BufferStream unpackedMap;
     m_mapData.write(&unpackedMap);
@@ -1670,6 +1811,122 @@ void cc2::ClipboardMap::write(ccl::Stream* stream) const
     writeTaggedBlock<0>(stream, "END ");
 }
 
+size_t cc2::MapSection::findClosestHintIndex(QPoint pos) const {
+    size_t hintIdx = 0;
+    for (int y = 0; y < m_mapData.height(); y += 1) {
+        for (int x = 0; x < m_mapData.width(); x += 1) {
+            const cc2::Tile& terrain = m_mapData.tile(x, y).bottom();
+            if (pos.x() == x && pos.y() == y) {
+                return hintIdx;
+            }
+            if (terrain.type() == Tile::Clue) {
+                hintIdx += 1;
+            }
+        }
+    }
+    Q_UNREACHABLE();
+}
+
+void cc2::MapSection::swapTiles(QPoint a, QPoint b) {
+    Tile& tileA = m_mapData.tile(a.x(), a.y());
+    Tile& tileB = m_mapData.tile(b.x(), b.y());
+
+    bool aHasClue = tileA.bottom().type() == Tile::Clue;
+    size_t aClueIndex = findClosestHintIndex(a);
+    bool bHasClue = tileB.bottom().type() == Tile::Clue;
+    size_t bClueIndex = findClosestHintIndex(b);
+    if (aHasClue && bHasClue) {
+        std::string aClue = std::move(m_clueData[aClueIndex]);
+        m_clueData[aClueIndex] = m_clueData[bClueIndex];
+        m_clueData[bClueIndex] = aClue;
+    }
+    if (!aHasClue && bHasClue) {
+        m_clueData.insert(m_clueData.begin() + aClueIndex, std::move(m_clueData[bClueIndex]));
+        if (bClueIndex >= aClueIndex) {
+            bClueIndex += 1;
+        }
+        m_clueData.erase(m_clueData.begin() + bClueIndex);
+    } else if (aHasClue && !bHasClue) {
+        m_clueData.insert(m_clueData.begin() + bClueIndex, std::move(m_clueData[aClueIndex]));
+        if (aClueIndex >= bClueIndex) {
+            aClueIndex += 1;
+        }
+        m_clueData.erase(m_clueData.begin() + aClueIndex);
+    }
+
+    Tile tempTile = Tile(tileA);
+    tileA = Tile(std::move(tileB));
+    tileB = Tile(std::move(tempTile));
+}
+
+void cc2::MapSection::rotateRight(bool rotateTiles) {
+    uint8_t width = m_mapData.width();
+    uint8_t height = m_mapData.height();
+    uint8_t currentSize = std::max(width, height);
+    uint8_t topLeftOffset = 0;
+    m_mapData.resize(currentSize, currentSize);
+    while (currentSize >= 2) {
+        uint8_t finalTilePos = currentSize - 1;
+        for (uint8_t xOffset = 0; xOffset < finalTilePos; xOffset += 1) {
+            QPoint topPoint(topLeftOffset + xOffset, topLeftOffset);
+            QPoint rightPoint(topLeftOffset + finalTilePos, topLeftOffset + xOffset);
+            QPoint bottomPoint(topLeftOffset + finalTilePos - xOffset, topLeftOffset + finalTilePos);
+            QPoint leftPoint(topLeftOffset, topLeftOffset + finalTilePos - xOffset);
+            swapTiles(topPoint, rightPoint);
+            swapTiles(topPoint, bottomPoint);
+            swapTiles(topPoint, leftPoint);
+            if (rotateTiles) {
+                Tile& topTile = m_mapData.tile(topPoint.x(), topPoint.y());
+                Tile& rightTile = m_mapData.tile(rightPoint.x(), rightPoint.y());
+                Tile& bottomTile = m_mapData.tile(bottomPoint.x(), bottomPoint.y());
+                Tile& leftTile = m_mapData.tile(leftPoint.x(), leftPoint.y());
+                topTile.rotateRight(false);
+                rightTile.rotateRight(false);
+                bottomTile.rotateRight(false);
+                leftTile.rotateRight(false);
+            }
+        }
+        currentSize -= 2;
+        topLeftOffset += 1;
+    }
+    // Rotate the center tile which we didn't touch
+    if (currentSize == 1) {
+        Tile& centerTile = m_mapData.tile(topLeftOffset, topLeftOffset);
+        centerTile.rotateRight(false);
+    }
+    // `width` and `height` are swapped on purpose
+    m_mapData.resize(height, width, width > height ? width - height : 0, 0);
+}
+void cc2::MapSection::rotateLeft(bool rotateTiles) {
+    // XXX: Optimize this?
+    rotateRight(rotateTiles);
+    rotateRight(rotateTiles);
+    rotateRight(rotateTiles);
+}
+void cc2::MapSection::flipHoriz(bool rotateTiles) {
+    for (uint8_t x = 0; x < m_mapData.width() / 2; x += 1) {
+        for (uint8_t y = 0; y < m_mapData.height(); y += 1) {
+            swapTiles(QPoint(x, y), QPoint(m_mapData.width() - x - 1, y));
+            Tile& leftTile = m_mapData.tile(x, y);
+            Tile& rightTile = m_mapData.tile(m_mapData.width() - x - 1, y);
+            leftTile.flipHoriz();
+            rightTile.flipHoriz();
+        }
+    }
+    // Mirror the middle line
+    if (m_mapData.width() % 2 != 0 && rotateTiles) {
+        uint8_t x = m_mapData.width() / 2;
+        for (uint8_t y = 0;y < m_mapData.height();y += 1) {
+            Tile& middleTile = m_mapData.tile(x, y);
+            middleTile.flipHoriz();
+        }
+    }
+}
+void cc2::MapSection::flipVert(bool rotateTiles) {
+    rotateRight(rotateTiles);
+    flipHoriz(rotateTiles);
+    rotateLeft(rotateTiles);
+}
 
 #define SAVE_DATA_SIZE 100
 

@@ -110,16 +110,38 @@ public:
     bool load(const QString& filename);
     QString filename() const { return m_filename; }
 
+    typedef const QPixmap* WireColor;
+    typedef std::array<WireColor, 4> WireFills;
     void drawAt(QPainter& painter, int x, int y, const cc2::Tile* tile,
-                bool allLayers) const;
+                bool allLayers, const WireFills& wireFills) const;
+    void drawAt(QPainter& painter, int x, int y, const cc2::Tile* tile,
+              bool allLayers) const
+    {
+        drawAt(painter, x, y, tile, allLayers, defaultWireFill());
+    }
 
+    void draw(QPainter& painter, int x, int y, const cc2::Tile* tile,
+              bool allLayers, const WireFills& wireFills) const
+    {
+        drawAt(painter, x * m_size, y * m_size, tile, allLayers, wireFills);
+    }
     void draw(QPainter& painter, int x, int y, const cc2::Tile* tile,
               bool allLayers) const
     {
-        drawAt(painter, x * m_size, y * m_size, tile, allLayers);
+        drawAt(painter, x * m_size, y * m_size, tile, allLayers, defaultWireFill());
     }
 
     QIcon getIcon(const cc2::Tile* tile) const;
+
+    WireFills defaultWireFill() const {
+        return {&m_gfx[cc2::G_WireFill], &m_gfx[cc2::G_WireFill], &m_gfx[cc2::G_WireFill], &m_gfx[cc2::G_WireFill]};
+    }
+     WireColor getWireFill() const {
+        return &m_gfx[cc2::G_WireFill];
+    };
+     WireColor getLiveWireFill() const {
+        return &m_gfx[cc2::G_LiveWireFill];
+    };
 
     static QString baseName(cc2::Tile::Type type);
     static QString getName(const cc2::Tile* tile);
@@ -132,12 +154,12 @@ private:
 
     QPixmap m_gfx[cc2::NUM_GRAPHICS];
 
-    void drawLayer(QPainter& painter, int x, int y, const cc2::Tile* tile, bool reveal) const;
+    void drawLayer(QPainter& painter, int x, int y, const cc2::Tile* tile, bool reveal, const WireFills& wireFills) const;
     void drawArrow(QPainter& painter, int x, int y, cc2::Tile::Direction direction) const;
     void drawGlyph(QPainter& painter, int x, int y, uint32_t glyph) const;
     void drawTracks(QPainter& painter, int x, int y, uint32_t tracks) const;
     void drawWires(QPainter& painter, int x, int y, uint32_t wireMask,
-                   cc2::GraphicIndex base) const;
+                   cc2::GraphicIndex base, const WireFills& wireFills) const;
 };
 
 #endif

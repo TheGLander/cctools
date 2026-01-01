@@ -269,14 +269,14 @@ void BigTileWidget::setView(ViewType type)
 void BigTileWidget::rotateLeft()
 {
     for (cc2::Tile& tile : m_tiles)
-        tile.rotateLeft();
+        tile.rotateLeft(true);
     update();
 }
 
 void BigTileWidget::rotateRight()
 {
     for (cc2::Tile& tile : m_tiles)
-        tile.rotateRight();
+        tile.rotateRight(true);
     update();
 }
 

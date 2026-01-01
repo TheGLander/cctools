@@ -22,6 +22,7 @@
 #include "History.h"
 #include "libcc2/Tileset.h"
 #include "libcc2/Map.h"
+#include <optional>
 
 class QPainter;
 class QUndoStack;
@@ -43,6 +44,9 @@ public:
         ShowMovePaths = (1<<0),
         ShowViewBox = (1<<1),
         ShowErrors = (1<<2),
+        ShowClipboard = (1<<3),
+        ShowHoveredWires = (1<<4),
+        ColorWireNetworks = (1<<5),
         ShowAll = ShowMovePaths | ShowViewBox | ShowErrors,
     };
 
@@ -127,7 +131,7 @@ public:
 
     void renderTo(QPainter& painter);
     QImage renderReport();
-    QImage renderSelection();
+    QImage renderMap(const cc2::MapData& map);
 
 signals:
     void mouseInfo(const QString& text, int timeout = 0);
@@ -148,6 +152,8 @@ public slots:
     void redo();
     void setLeftTile(const cc2::Tile& tile) { m_leftTile = tile; }
     void setRightTile(const cc2::Tile& tile) { m_rightTile = tile; }
+    void setClipboard(const cc2::MapSection& map) { m_clipboardMap = map.mapData(); }
+    void clearClipboard() { m_clipboardMap.reset(); }
 
 protected:
     void paintEvent(QPaintEvent*) override;
@@ -172,9 +178,24 @@ private:
     MapUndoCommand* m_undoCommand;
     QRect m_selectRect;
 
+    std::optional<cc2::MapData> m_clipboardMap;
+
     double m_zoomFactor;
     QPixmap m_tileBuffer;
     QPixmap m_tileCache;
+    QList<QColor> getWireColoringColors() {
+        return {
+                QColor(0xe6194b), QColor(0x3cb44b), QColor(0xffe119),
+                QColor(0x4363d8), QColor(0xf58231), QColor(0x911eb4),
+                QColor(0x42d4f4), QColor(0xf032e6), QColor(0xbfef45),
+                QColor(0xfabed4), QColor(0x469990), QColor(0xdcbeff),
+                QColor(0x9a6324), QColor(0xfffac8), QColor(0x800000),
+                QColor(0xaaffc3), QColor(0x808000), QColor(0xffd8b1),
+                QColor(0x000075), QColor(0xd9d9d9)
+        };
+    };
+
+    QList<QPixmap> m_wireColoringFills;
     bool m_cacheDirty;
 
     QRect calcTileRect(int x, int y, int w = 1, int h = 1) const
@@ -200,10 +221,10 @@ private:
                       (int)((y * m_tileset->size() + (m_tileset->size() / 2)) * m_zoomFactor) + 2);
     }
 
-    QSize renderSize() const
+    QSize renderSize(const cc2::MapData& mapData) const
     {
-        return QSize(m_map->mapData().width() * m_tileset->size() * m_zoomFactor,
-                     m_map->mapData().height() * m_tileset->size() * m_zoomFactor);
+        return QSize(mapData.width() * m_tileset->size() * m_zoomFactor,
+                     mapData.height() * m_tileset->size() * m_zoomFactor);
     }
 
     void addWire(cc2::Tile& tile, cc2::Tile::Direction direction);
@@ -211,6 +232,8 @@ private:
     void delWire(cc2::Tile& tile, cc2::Tile::Direction direction);
 
     void updateForUndoCommand(const QUndoCommand* command);
+    void renderMapData(QPainter& painter, const cc2::MapData& mapData);
+    void rescaleTileBuffer();
 };
 
 #endif
